@@ -1,8 +1,8 @@
 /**
- * @file A1.c
- * @author your name (you@domain.com)
+ * @file shelly.c
+ * @author Zhanna Klimanova (zhanna.klimanova@mail.mcgill.ca)
  * @brief 
- * @version 0.1
+ * @version shelly
  * @date 2022-09-19
  * 
  * @copyright Copyright (c) 2022
@@ -13,7 +13,6 @@
 #define MAX_INPUT_ARGS 5
 #define MAX_NUM_JOBS 5
 #define TRUE 1
-#define FALSE 0
 #define NULL_CHARACTER '\0'
 #define EXIT_SUCCESSFUL 0
 #define WFORFINISH 0
@@ -36,20 +35,29 @@
 
 /* -- Definitions -- */
 const char *writeFailMsg = "write: write fail.\n";
-const char *openFileFailMsg = "open: failed to open file.\n";
 const char *execErrorMessage = "execvp: invalid command.\n";
 const char *pipeErrorMessage = "pipe: error occured with opening the pipe.\n";
 const char *closeErrorMessage = "close: error closing the file pointed to by file descriptor.\n";
 const char *forkErrorMessage = "fork: process forking failed.\n";
 const char *dup2ErrorMessage = "dup2: error creating copy of file descriptor.\n";
+
 int jobsQueue[MAX_NUM_JOBS];
+
 int bg = 0;
+
 pid_t fgPid = FG_PID_DEFAULT;
 
 /* -- Functions -- */
 /**
- * @brief performs error checking on input and parses the user command in args 
- *        and returns the number of entries in the array. .
+ * @brief prints shelly welcome message for the user. Use case examples
+ *        are included.
+ * 
+ */
+void printWelcomeMessage();
+
+/**
+ * @brief performs error checking on input, parses the user command in args, 
+ *        and returns the number of entries in the array.
  * 
  * @param prompt 
  * @param args 
@@ -57,105 +65,138 @@ pid_t fgPid = FG_PID_DEFAULT;
  * @return int 
  */
 int getcmd(char *prompt, char *args[]);
+
 /**
- * @brief 
+ * @brief frees and clears used space in args array.
  * 
+ * @param args 
+ * @param numArgs 
  */
 void freeArgs(char *args[], int numArgs);
+
 /**
- * @brief 
+ * @brief clears all space in the args array by setting to NULL.
  * 
+ * @param args 
+ */
+void resetArgs(char *args[MAX_INPUT_ARGS]);
+
+/**
+ * @brief executes execvp and performs error checking to ensure the
+ *        execvp command was performed successfully.
+ * 
+ * @param cmd 
+ * @param cmdArgs 
  */
 void exec_shelly(const char *cmd, char *const cmdArgs[]);
+
 /**
- * @brief 
+ * @brief checks for SIGTSTP and SIGINT signals raised by user.
  * 
- * @return int 
  */
 void checkForSignals();
+
 /**
- * @brief 
+ * @brief gracefully handles SIGINT or CTRL-C signal by stopping any
+ *        current forground process and outputting a message for the user
+ *        to continue.
  * 
  * @return int 
  */
 void handle_sigint(int sigNum);
+
 /**
- * @brief 
+ * @brief gracefully handles SIGTSTP or CTRL-Z signal by not performing any
+ *        exiting action when issued by a user. The user can press Enter to continue.
  * 
  * @return int 
  */
 void handle_sigtstp(int sigNum);
+
 /**
- * @brief 
+ * @brief shelly built-in command that prints its input back
+ *        to STDOUT where the user can observe it.
  * 
+ * @param args 
  */
 void echo_shelly(char *args[MAX_INPUT_ARGS]);
+
 /**
- * @brief 
+ * @brief shelly built-in command that changes directory into the one input
+ *        by the user.
  * 
+ * @param args 
  */
 void cd_shelly(char *args[MAX_INPUT_ARGS]);
+
 /**
- * @brief 
+ * @brief shelly built-in command that prints the user's current working
+ *        directory to the STDOUT.
  * 
- * @return int 
  */
 void pwd_shelly();
+
 /**
- * @brief 
+ * @brief shelly built-in command that gracefully exits shelly by terminating 
+ *        all currently running jobs.
  * 
- * @return int 
  */
 void exit_shelly();
+
 /**
- * @brief 
+ * @brief shelly built-in command that takes a job from the jobs queue
+ *        and puts it into forground execution. If the job in the jobs queue
+ *        has terminated in the background, fg will remove that jobs from the jobs queue
+ *        and not execute it in the forground.
  * 
- * @return int 
+ * @param args 
  */
 void fg_shelly(char *args[MAX_INPUT_ARGS]);
+
 /**
- * @brief 
+ * @brief adds a new job (process id) to the jobs queue.
  * 
+ * @param pid 
  */
 void addNewJob(int pid);
+
 /**
- * @brief 
+ * @brief lists all the jobs in the jobs queue. 
  * 
- * @return int 
  */
 void jobs_shelly();
+
 /**
- * @brief 
+ * @brief removes finished jobs from the jobs queue.
  * 
  */
 void removeFinishedJobs();
+
 /**
- * @brief 
+ * @brief shelly built-in command that performs output redirection (to another file).
  * 
- */
-void checkForRedirectionOrPiping(char *args[MAX_INPUT_ARGS], int inputArgs, int *redirectionFlag, int *pipingFlag);
-void kill_fg(int sig);
-/**
- * @brief 
- * 
- * @return int 
+ * @param args 
+ * @param redirectionIndex 
  */
 void redirection_shelly(char *args[MAX_INPUT_ARGS], int redirectionIndex);
+
 /**
- * @brief 
+ * @brief shelly built-in command that does inter-process communication
+ *        pipes. It redirects the output of one process into the input of another 
+ *        process.
  * 
- * @return int 
+ * @param args 
+ * @param redirectionIndex 
  */
 void piping_shelly(char *args[MAX_INPUT_ARGS], int redirectionIndex);
 
+
 int main(void)
 {
-    printf("%s\n", "Mini shell version <shelly>. Created September 2022.");
-    
+    printWelcomeMessage();
+
     char *args[MAX_INPUT_ARGS];
     int cnt; // count the number of arguments in command
-    int redirection; /* flag for output redirection */
-    int piping; /* flag for piping */
 
     // Clear jobs
     memset(jobsQueue, NULL_CHARACTER, MAX_NUM_JOBS);
@@ -166,35 +207,25 @@ int main(void)
     {
         bg = 0;
         fgPid = FG_PID_DEFAULT;
-        redirection = 0;
-        piping = 0;
 
         checkForSignals();
 
         if ((cnt = getcmd("\nshelly >> ", args)) > 0) {
             // Built-in commands
-            checkForRedirectionOrPiping(args, cnt, &redirection, &piping);
-            printf("%d\n", redirection);
-            printf("%d\n", piping);
-            
             if (strcmp("echo", args[0]) == 0) {
                 echo_shelly(args);
-                // printf("in echo");
             }
             else if (strcmp("cd", args[0]) == 0) {
                 printf("%d", cnt);
                 cd_shelly(args);
-                printf("in cd");
             }
             else if (strcmp("pwd", args[0]) == 0) {
                 pwd_shelly();
-                printf("in pwd");
             }
             else if (strcmp("exit", args[0]) == 0) {
                 exit_shelly(EXIT_SUCCESSFUL);
-                printf("in exit");
             }
-            else if (strcmp("fg", args[0]) == 0) { // broken ???
+            else if (strcmp("fg", args[0]) == 0) {
                 fg_shelly(args);
             }
             else if (strcmp("jobs", args[0]) == 0) {
@@ -203,7 +234,6 @@ int main(void)
             else {
                 // External commands
                 pid_t pid = fork();
-                printf("args[0]%s", args[0]);
 
                 if (pid == 0) {
                     // Child
@@ -235,11 +265,20 @@ int main(void)
                 }
             }
         }
+        // Free each arg space in args because malloc was used before
         freeArgs(args, cnt);
-        redirection = 0;
-        piping = 0;
     }
-    // Free each arg space in args because malloc was used before    
+        
+}
+
+void printWelcomeMessage()
+{
+    printf("%s\n", "Mini shell version <shelly>. Created September 2022.");
+    printf("\n");
+    printf("%s\n", "EXAMPLES: \n \t1. echo \"hello\" \n \t2. pwd \n \t3. cd .. \n \t4. ls -l | cat \n \t5. ls > shelly_out.txt");
+    printf("%s\n", "\t6. sleep 1234 & \n \t7. jobs \n \t8. fg 0 \n \t9. CTRL-C \n \t10. sleep 2 \n \t11. exit");
+    printf("_____________________________________________________________________________________________________");
+    printf("\n");
 }
 
 int getcmd(char *prompt, char *args[])
@@ -269,10 +308,7 @@ int getcmd(char *prompt, char *args[])
         bg = 0;
     }
 
-    for (int i = 0; i < MAX_INPUT_ARGS; ++i) {
-        args[i] = NULL;
-    }
-
+    resetArgs(args);
 
     // Split the command and insert tokens inside args
     while ((token = strsep(&line, " \t\n")) != NULL && i < MAX_INPUT_ARGS - 1) 
@@ -305,9 +341,19 @@ void freeArgs(char *args[], int numArgs)
     }
 }
 
+void resetArgs(char *args[MAX_INPUT_ARGS])
+{
+    for (int i = 0; i < MAX_INPUT_ARGS; i++) {
+        if (args[i] != NULL) {
+            args[i] = NULL;
+        }
+    }
+}
+
 void exec_shelly(const char *cmd, char *const cmdArgs[]) 
 {
     int execReturnCode = execvp(cmd, cmdArgs);
+
     if (execReturnCode < 0) {
        printf("%s", execErrorMessage);
        exit(1);
@@ -329,7 +375,7 @@ void checkForSignals()
 
 void handle_sigint(int sigNum)
 {
-    if (fgPid != FG_PID_DEFAULT) {
+    if (fgPid) {
         for (int jobNum = 0; jobNum < MAX_NUM_JOBS; jobNum++)
         {
             if (jobsQueue[jobNum] == fgPid) {
@@ -345,7 +391,6 @@ void handle_sigint(int sigNum)
     printf("To kill shelly, press CTRL+D. Otherwise, press Enter to continue...");
     return;
 }
-
 
 void handle_sigtstp(int sigNum)
 {
@@ -433,7 +478,7 @@ void addNewJob(int pid)
 
 void jobs_shelly()
 {
-    // removeFinishedJobs(); // do not display jobs that are done/dead ??? broken
+    // removeFinishedJobs(); // do not display jobs that are done/dead
     printf("Job [#]\t PID\n");
     for (int jobNum = 0; jobNum < MAX_NUM_JOBS; jobNum++)
     {
@@ -444,12 +489,12 @@ void jobs_shelly()
 }
 
 void removeFinishedJobs() {
+    pid_t waitReturn;
+
     for (int jobNum = 0; jobNum < MAX_NUM_JOBS; jobNum++) {
         if (jobsQueue[jobNum] != 0) {
-            printf("rmv %d\n", jobNum);
-            if (waitpid(jobsQueue[jobNum], NULL, WNOHANG) != 0) { // WNOHANG: allow process to move on to other tasks
-                printf("rmv %d\n", jobsQueue[jobNum]);
-                printf("finished");
+            waitReturn = waitpid(jobsQueue[jobNum], NULL, WNOHANG);
+            if (waitReturn != 0) { // WNOHANG: allow process to move on to other tasks
                 jobsQueue[jobNum] = 0;
             }
         }
@@ -486,19 +531,6 @@ void fg_shelly(char *args[MAX_INPUT_ARGS])
     waitpid(fgPid, NULL, WFORFINISH);
     jobsQueue[jobNum] = 0;
     fgPid = FG_PID_DEFAULT;
-}
-
-void checkForRedirectionOrPiping(char *args[MAX_INPUT_ARGS], int inputArgs, int *redirectionFlag, int *pipingFlag)
-{
-    for (int i = 0; i < inputArgs; i++) 
-    {
-        if (strcmp(">", args[i]) == 0) {
-            *redirectionFlag = 1;
-        }
-        else if (strcmp("|", args[i]) == 0) {
-            *pipingFlag = 1;
-        }
-    }
 }
 
 void redirection_shelly(char *args[MAX_INPUT_ARGS], int redirectionIndex)
