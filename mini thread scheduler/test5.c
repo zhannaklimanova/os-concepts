@@ -1,4 +1,4 @@
-#include "sut2.h"
+#include "sut.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -45,7 +45,7 @@ void hello3() {
     else {
         char *read_result = sut_read(fd, read_sbuf, buf_size);
         if (read_result != NULL) {
-            printf(read_sbuf);
+            printf("%s", read_sbuf);
             sut_close(fd);
         } else {
             printf("Error: sut_read() failed");

@@ -459,7 +459,7 @@ void exit_shelly(int code)
     {
         if (jobsQueue[jobNum] != 0) {
             pid = jobsQueue[jobNum];
-            kill(pid, SIGTERM); // SIGTERM instead of SIGKILL. Src: https://linuxhandbook.com/sigterm-vs-sigkill/#:~:text=SIGTERM%20gracefully%20kills%20the%20process,the%20child%20processes%20as%20well.
+            kill(pid, SIGTERM); // SIGTERM instead of SIGKILL
         }
     }
     exit(code);
@@ -478,7 +478,6 @@ void addNewJob(int pid)
 
 void jobs_shelly()
 {
-    // removeFinishedJobs(); // do not display jobs that are done/dead
     printf("Job [#]\t PID\n");
     for (int jobNum = 0; jobNum < MAX_NUM_JOBS; jobNum++)
     {
@@ -538,7 +537,7 @@ void redirection_shelly(char *args[MAX_INPUT_ARGS], int redirectionIndex)
     // Have output be redirected to file instead of STDOUT
     int fd;
 
-    fd = open(args[redirectionIndex+1], O_WRONLY | O_CREAT | O_TRUNC, PERMS);
+    fd = open(args[redirectionIndex+1], O_WRONLY|O_CREAT|O_TRUNC, PERMS);
     if (dup2(fd, STDOUT_FILENO) >= 0 && fd >= 0) {
         args[redirectionIndex] = NULL;
         args[redirectionIndex+1] = NULL;

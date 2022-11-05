@@ -1,226 +1,289 @@
-// #include <stdio.h>
-// #include <signal.h>
-// #include <unistd.h>
-// #include <stdlib.h>
-// #include <pthread.h>
-// #include <time.h>
-// #include <string.h>
-// #include <assert.h>
-// #include "sut.h"
-// #include "queue.h"
+#include "sut.h"
+#include "queue.h"
 
-// // Use total thread count as a thread identification to differentiate them in queues
-// int threadCount;
+// QUEUES
+// Task ready queue: each running task is placed in ready queue for pickup by c_exec
+struct queue taskReadyQueue;
+// Wait queue: i/o tasks that are waiting to be serviced
+struct queue waitQueue;
 
-// // Compute executor kernel level thread 1
-// pthread_t *cexec;
+// THREADS
+// Compute executor kernel level thread 1 and its context
+pthread_t *cexecThread;
+ucontext_t cexecContext;
+// I/O executor kernel level thread 2
+pthread_t *iexecThread;
 
-// // I/O executor kernel level thread 2
-// pthread_t *iexec;
+// CURRENT TASKS IN EACH THREAD
+struct queue_entry *cexecCurrentRunningTask; // the cexecContext needs to be set with the context of this task
+struct queue_entry *iexecCurrentRunningTask;
 
-// // C-EXEC Mutex
-// pthread_mutex_t lock;
+// Mutex for locking critical sections
+pthread_mutex_t lock;
 
-// // Main user thread
-// ucontext_t parent;
+// Checking to see if task has requested the sut_shutdown operation
+bool isShutdown;
 
-// // Task ready queue: each running task is placed in ready queue for pickup by c_exec
-// struct queue taskReadyQueue;
+void sut_init()
+{
+    int rc;
 
-// // Wait queue: i/o tasks that are waiting to be serviced
-// struct queue waitQueue;
+    // Initialize mutex lock for handling future critical section
+    rc = pthread_mutex_init(&lock, PTHREAD_MUTEX_DEFAULT);
+    assert(rc == 0);
 
-// // I/O-issued operation requests are placed in this queue; issuing task is placed in waitQueue
-// struct queue requestQueue;
+    // Create queues
+    taskReadyQueue = queue_create();
+    waitQueue = queue_create();
 
-// // Responses to I/O-issued operations; once received, task gets moved from waitQueue to taskReadyQueue
-// struct queue responseQueue;
+    // Initialize queues
+    queue_init(&taskReadyQueue);
+    queue_init(&waitQueue);
 
-// bool isShutdown = false;
+    // Capture and initialize main context of the cexec thread
+    getcontext(&cexecContext);
 
-// void sut_init() {
-//   int rc;
+    // Create C-EXEC kernel thread
+    cexecThread = (pthread_t *)malloc(sizeof(pthread_t));
+    rc = pthread_create(cexecThread, NULL, cexecScheduler, NULL);
+    assert(rc == 0);
 
-//   // Number of threads counter
-//   threadCount = 0;
+    // Create I-EXEC kernel thread
+    iexecThread = (pthread_t *)malloc(sizeof(pthread_t));
+    rc = pthread_create(iexecThread, NULL, iexecScheduler, NULL);
+    assert(rc == 0);
 
-//   // Allocated memory for C-EXEC thread
-//   cexec = (pthread_t *)malloc(sizeof(pthread_t));
-//   // Allocate memory for I-EXEC thread
-//   iexec = (pthread_t *)malloc(sizeof(pthread_t));
+    // Initialize current running task pointers
+    cexecCurrentRunningTask = (struct queue_entry *)malloc(sizeof(struct queue_entry));
+    iexecCurrentRunningTask = (struct queue_entry *)malloc(sizeof(struct queue_entry));
+}
 
-//   // Initialize mutex lock for handling future critical section
-//   rc = pthread_mutex_init(&lock, PTHREAD_MUTEX_DEFAULT);
-//   assert(rc == 0);
+void *cexecScheduler()
+{
+    struct timespec sleepTime;
+    sleepTime.tv_sec = 0;
+    sleepTime.tv_nsec = 100000; // 100 microseconds = 100,000 nanoseconds
 
-//   // Create queues
-//   taskReadyQueue = queue_create();
-//   waitQueue = queue_create();
-//   requestQueue = queue_create();
-//   responseQueue = queue_create();
+    struct queue_entry *taskAtFrontOfReadyQueue = (struct queue_entry *)malloc(sizeof(struct queue_entry));
 
-//   // Initialize queues
-//   queue_init(&taskReadyQueue);
-//   queue_init(&waitQueue);
-//   queue_init(&requestQueue);
-//   queue_init(&responseQueue);
+    while(true)
+    {
+        pthread_mutex_lock(&lock);
+        taskAtFrontOfReadyQueue = queue_peek_front(&taskReadyQueue);
+        pthread_mutex_unlock(&lock);
 
-//   // Capture context of main
-//   // getcontext(&parent);
-//   // printf("Line Number %s->%s:%d\n", __FILE__, __FUNCTION__, __LINE__);
+        if (taskAtFrontOfReadyQueue != NULL) {
+            cexecCurrentRunningTask = taskAtFrontOfReadyQueue; // take task from ready queue and put it as the one being run by cexec thread
 
-//   // Create C-EXEC kernel thread
-//   rc = pthread_create(cexec, NULL, c_exec, NULL);
-//   assert(rc == 0);
-//   // printf("Line Number %s->%s:%d\n", __FILE__, __FUNCTION__, __LINE__);
+            pthread_mutex_lock(&lock); // lock critical sections (anything todo with queue manipulation is a critical section)
+            queue_pop_head(&taskReadyQueue); // pop task to perform some operations on it
+            pthread_mutex_unlock(&lock);
 
+            swapcontext(&cexecContext, &(cexecCurrentRunningTask->context)); // switches to task and stalls until task is either finished or is yielding
 
-//   // Create I-EXEC kernel thread
-//   rc = pthread_create(iexec, NULL, i_exec, NULL);
-//   assert(rc == 0);
-//   // printf("Line Number %s->%s:%d\n", __FILE__, __FUNCTION__, __LINE__);
+            // The cexecCurrentRunningTask has either finished or is yielding somewhere
+            if (cexecCurrentRunningTask->isTaskActive == true) { // task has not finished
+                pthread_mutex_lock(&lock);
+                if (taskAtFrontOfReadyQueue->ioOperation.ioOperationType > 0) {
+                    // I/O operation requested by task so its placed at end of wait queue
+                    queue_insert_tail(&waitQueue, taskAtFrontOfReadyQueue);
+                }
+                else {
+                    // A task that is yielding is put back at the end of task ready queue
+                    queue_insert_tail(&taskReadyQueue, taskAtFrontOfReadyQueue);
+                }
+                pthread_mutex_unlock(&lock);
+            }
+        }
+        else {
+            pthread_mutex_lock(&lock);
+            struct queue_entry *readyTask = queue_peek_front(&taskReadyQueue);
+            struct queue_entry *waitTask = queue_peek_front(&waitQueue);
+            pthread_mutex_unlock(&lock);
+            if (readyTask == NULL && waitTask == NULL && isShutdown == true && cexecCurrentRunningTask == NULL && iexecCurrentRunningTask == NULL) {
+                free(taskAtFrontOfReadyQueue);
+                pthread_exit(NULL);
+            }
+        }
+        cexecCurrentRunningTask = NULL;
+        nanosleep(&sleepTime, NULL);
+    }
+    free(taskAtFrontOfReadyQueue);
+    pthread_exit(NULL);
+}
 
-// }
+void *iexecScheduler()
+{
+    struct timespec sleepTime;
+    sleepTime.tv_sec = 0;
+    sleepTime.tv_nsec = 100000; // 100 microseconds = 100,000 nanoseconds
 
-// void *c_exec()
-// {
-//   struct timespec sleepTime;
-//   sleepTime.tv_sec = 0;
-//   sleepTime.tv_nsec = 100000; // 100 microseconds = 100,000 nanoseconds
+    struct queue_entry *taskAtFrontOfWaitQueue = (struct queue_entry *)malloc(sizeof(struct queue_entry));
 
-//   pthread_mutex_lock(&lock);
-//   struct queue_entry *readyTask = queue_peek_front(&taskReadyQueue);
-//   struct queue_entry *waitTask = queue_peek_front(&waitQueue);
-//   pthread_mutex_unlock(&lock);
+    while(true)
+    {
+        pthread_mutex_lock(&lock);
+        taskAtFrontOfWaitQueue = queue_peek_front(&waitQueue);
+        pthread_mutex_unlock(&lock);
 
-//   while (true)
-//   {
-//     printf("Line Number %s->%s:%d\n", __FILE__, __FUNCTION__, __LINE__);
+        if (taskAtFrontOfWaitQueue != NULL) {
+            iexecCurrentRunningTask = taskAtFrontOfWaitQueue; // take task from wait queue and put it as the one being run by iexec thread
 
-//     if ((readyTask == NULL && waitTask == NULL) && (isShutdown)) {
-//       break;
-//     }
-//     pthread_mutex_lock(&lock);
-//     readyTask = queue_peek_front(&taskReadyQueue);
-//     pthread_mutex_unlock(&lock);
+            pthread_mutex_lock(&lock);
+            queue_pop_head(&waitQueue); // pop task to perform some operations on it
+            pthread_mutex_unlock(&lock);
 
-//     if (readyTask) { // if there's a task available in tasksReadyQueue then context can be switched
-//       pthread_mutex_lock(&lock);
-//       queue_pop_head(&taskReadyQueue); // remove task from the queue because it is being executed in context
-//       pthread_mutex_unlock(&lock);
+            switch (taskAtFrontOfWaitQueue->ioOperation.ioOperationType)
+            {
+                case OPEN_OP: {
+                    int rc;
+                    mode_t permissions = 0770;
+                    struct openFile *taskInfo = &(taskAtFrontOfWaitQueue->ioOperation.ioOperationData.openFile);
 
-//       // ucontext_t context = *(ucontext_t *)readyTask->data;
-//       swapcontext(&parent, readyTask->data);
-//       // printf("Line Number %s->%s:%d\n", __FILE__, __FUNCTION__, __LINE__);
+                    rc = open(taskInfo->fname, O_RDWR|O_CREAT, permissions);
+                    if (rc >= 0) {
+                        taskInfo->returnVal = rc;
+                    }
+                    break;
+                }
+                case READ_OP: {
+                    /*
+                        buf: this buffer is used a pre-allocated memory space provided by stack to store information from fd
+                        size: tells function the max number of bytes that could be copied into the buffer
+                    */
+                    struct readFile *taskInfo = &(taskAtFrontOfWaitQueue->ioOperation.ioOperationData.readFile);
+                    if (read(taskInfo->fd, taskInfo->buf, taskInfo->size) >= 0) { // assuming these parameters have been intialized by sut_read
+                        taskInfo->returnVal = taskInfo->buf; // function returns a non NULL value on success
+                    }
+                    else {
+                        taskInfo->returnVal = NULL;
+                    }
+                    break;
+                }
+                case WRITE_OP: {
+                    // Write the bytes in buf to the disk file that is already open
+                    struct writeFile *taskInfo = &(taskAtFrontOfWaitQueue->ioOperation.ioOperationData.writeFile);
+                    write(taskInfo->fd, taskInfo->buf, taskInfo->size); // not considering write errors in this call
+                    break;
+                }
+                case CLOSE_OP: {
+                    // Close file pointed to by fd
+                    int rc = 0;
+                    struct closeFile *taskInfo = &(taskAtFrontOfWaitQueue->ioOperation.ioOperationData.closeFile);
+                    rc = close(taskInfo->fd);
+                    if (rc == -1) {
+                        printf("%s", "close: error closing the file pointed to by file descriptor.\n");
+                    }
+                    break;
+                }
+            }
+            // Reset the I/O operation type as none since it was just performed (the information from I/O stays in struct for future use however)
+            taskAtFrontOfWaitQueue->ioOperation.ioOperationType = NO_IO_OP_REQUESTED;
 
-//     }
-//     pthread_mutex_lock(&lock);
-//     readyTask = queue_peek_front(&taskReadyQueue);
-//     waitTask = queue_peek_front(&waitQueue);
-//     pthread_mutex_unlock(&lock);
+            // Once IO operation has finished, put the task at the end of the readyTaskQueue
+            pthread_mutex_lock(&lock);
+            queue_insert_tail(&taskReadyQueue, taskAtFrontOfWaitQueue);
+            pthread_mutex_unlock(&lock);
+        }
+        else {
+            pthread_mutex_lock(&lock);
+            struct queue_entry *readyTask = queue_peek_front(&taskReadyQueue);
+            struct queue_entry *waitTask = queue_peek_front(&waitQueue);
+            pthread_mutex_unlock(&lock);
+            if (readyTask == NULL && waitTask == NULL && isShutdown == true && cexecCurrentRunningTask == NULL && iexecCurrentRunningTask == NULL) {
+                free(taskAtFrontOfWaitQueue);
+                pthread_exit(NULL);
+            }
+        }
+        iexecCurrentRunningTask = NULL;
+        nanosleep(&sleepTime, NULL);
+    }
+    free(taskAtFrontOfWaitQueue);
+    pthread_exit(NULL);
+}
 
-//     nanosleep(&sleepTime, NULL);
-//   }
-//   pthread_exit(NULL);
-// }
+bool sut_create(sut_task_f fn)
+{
+    struct queue_entry *newTask = (struct queue_entry *)malloc(sizeof(struct queue_entry));
 
-// void *i_exec()
-// {
-//   struct timespec sleepTime;
-//   sleepTime.tv_sec = 0;
-//   sleepTime.tv_nsec = 100000; // 100 microseconds = 100,000 nanoseconds
+    getcontext(&(newTask->context));
+    newTask->context.uc_stack.ss_sp = newTask->stack;
+    newTask->context.uc_stack.ss_size = THREAD_STACK_SIZE;
+    newTask->context.uc_link = NULL;
+    newTask->context.uc_stack.ss_flags = 0;
+    newTask->isTaskActive = true;
+    newTask->ioOperation.ioOperationType = NO_IO_OP_REQUESTED;
+    makecontext(&newTask->context, fn, 0);
 
-//   struct queue_entry *readyTask;
-//   struct queue_entry *waitTask;
-//   while (true)
-//   {
-//     printf("Line Number %s->%s:%d\n", __FILE__, __FUNCTION__, __LINE__);
+    if (newTask == NULL) {
+        return false;
+    }
 
-//     pthread_mutex_lock(&lock);
-//     readyTask = queue_peek_front(&taskReadyQueue);
-//     waitTask = queue_peek_front(&waitQueue);
-//     pthread_mutex_unlock(&lock);
+    // Newly created task is added at the end of the task ready queue
+    pthread_mutex_lock(&lock);
+    queue_insert_tail(&taskReadyQueue, newTask);
+    pthread_mutex_unlock(&lock);
 
-//     if ((readyTask == NULL && waitTask == NULL) && isShutdown) {
-//       break;
-//     }
+    return true;
+}
 
+void sut_yield()
+{
+    // After swapping context, cexecThread returns to where it was last executing (most likely the line just after running swapcontext in cexecScheduler)
+    swapcontext(&cexecCurrentRunningTask->context, &cexecContext);
+}
 
-//     // printf("hello");
-//     nanosleep(&sleepTime, NULL);
-//   }
-//   pthread_exit(NULL);
-// }
+void sut_exit()
+{
+    cexecCurrentRunningTask->isTaskActive = false;
+    swapcontext(&cexecCurrentRunningTask->context, &cexecContext);
+}
 
-// bool sut_create(sut_task_f fn) {
+int sut_open(char *fname)
+{
+    cexecCurrentRunningTask->ioOperation.ioOperationType = OPEN_OP;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.openFile.fname = fname;
+    swapcontext(&cexecCurrentRunningTask->context, &cexecContext); // switch to cexecThread, which will ask iexecThread to perform the open() system call
 
-//   /*
-//   A newly created task is
-//   added to the end of the task ready queue.
-//   */
-//   // thread descriptor
-//   threaddesc *tdescptr;
-//   tdescptr = malloc(sizeof(threaddesc));
+    return cexecCurrentRunningTask->ioOperation.ioOperationData.openFile.returnVal;
+}
 
-//   // Create user-level thread
-//   getcontext(&(tdescptr->threadcontext)); // save current user-level thread context
-//   tdescptr->threadid = threadCount;
-//   tdescptr->threadstack = (char *)malloc(THREAD_STACK_SIZE);
-//   tdescptr->threadcontext.uc_stack.ss_sp = tdescptr->threadstack; // uc_stack : Stack used for this context
-//   tdescptr->threadcontext.uc_stack.ss_size = THREAD_STACK_SIZE;
-//   tdescptr-> threadcontext.uc_link = 0; // &parent - uc_link : This is a pointer to the 'parent' context structure which is used if the context described in the current structure returns.
-//   tdescptr-> threadcontext.uc_stack.ss_flags = 0;
-//   // tdescptr->threadfunc = &fn;
+char *sut_read(int fd, char *buf, int size)
+{
+    cexecCurrentRunningTask->ioOperation.ioOperationType = READ_OP;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.readFile.fd = fd;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.readFile.buf = buf;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.readFile.size = size;
+    swapcontext(&cexecCurrentRunningTask->context, &cexecContext);
 
-//   makecontext(&(tdescptr->threadcontext), fn, 0);
+    return cexecCurrentRunningTask->ioOperation.ioOperationData.readFile.returnVal;
+}
 
-//   // increment number of user-level threads as we just created a new one
-//   threadCount++;
+void sut_write(int fd, char *buf, int size)
+{
+    cexecCurrentRunningTask->ioOperation.ioOperationType = WRITE_OP;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.writeFile.fd = fd;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.writeFile.buf = buf;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.writeFile.size = size;
+    swapcontext(&cexecCurrentRunningTask->context, &cexecContext);
+}
 
-//   // Add thread to back of taskReadyQueue (atomic)
-//   struct queue_entry *task = queue_new_node(&(tdescptr->threadcontext));
-//   pthread_mutex_lock(&lock);
-//   queue_insert_tail(&taskReadyQueue, task); // newly created task is added to end of task ready queue
-//   pthread_mutex_unlock(&lock);
+void sut_close(int fd)
+{
+    cexecCurrentRunningTask->ioOperation.ioOperationType = CLOSE_OP;
+    cexecCurrentRunningTask->ioOperation.ioOperationData.writeFile.fd = fd;
+    swapcontext(&cexecCurrentRunningTask->context, &cexecContext);
+}
 
-//   return 0; // What to return?????????
-// }
+void sut_shutdown()
+{
+    isShutdown = true;
 
-// void sut_yield() {
+    pthread_join(*cexecThread, NULL);
+    pthread_join(*iexecThread, NULL);
 
-//   // Get current context
-//   ucontext_t current_context;
-//   getcontext(&current_context);
-//   struct queue_entry *task = queue_new_node(&current_context);
-
-//   /*---
-//   // A task that is yielding is put back at the end of the ready queue and
-//   // the task at the front of the queue is selected to run next by the scheduler.
-//   */
-//   // Put task back at end of taskReadyQueue
-//   pthread_mutex_lock(&lock);
-//   queue_insert_tail(&taskReadyQueue, task);
-//   pthread_mutex_unlock(&lock);
-
-//   // swap content from current to c-exec
-//   swapcontext(&current_context, &parent);
-// }
-
-
-// void sut_exit() {
-
-//   // Stop execution of current task
-//   // and DO NOT put task back of taskReadyQueue
-//   ucontext_t current;
-//   getcontext(&current);
-//   swapcontext(&current, &parent);
-// }
-
-// void sut_shutdown() { // The  executors terminate only after executing all tasks in the queues
-//   // We need to keep the main thread waiting for the C-EXEC and I-EXEC threads
-//   // and it one of the important functions of sut_shutdown().
-//   // In addition, you can put any termination related actions into this function and cleanly terminate the threading library
-//   isShutdown = true;
-//   pthread_join(*cexec, NULL);
-//   pthread_join(*iexec, NULL);
-// }
+    free(cexecCurrentRunningTask);
+    free(iexecCurrentRunningTask);
+    free(cexecThread);
+    free(iexecThread);
+}
