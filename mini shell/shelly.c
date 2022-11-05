@@ -277,7 +277,7 @@ void printWelcomeMessage()
     printf("\n");
     printf("%s\n", "EXAMPLES: \n \t1. echo \"hello\" \n \t2. pwd \n \t3. cd .. \n \t4. ls -l | cat \n \t5. ls > shelly_out.txt");
     printf("%s\n", "\t6. sleep 1234 & \n \t7. jobs \n \t8. fg 0 \n \t9. CTRL-C \n \t10. sleep 2 \n \t11. exit");
-    printf("____________________________");
+    printf("____________________________________");
     printf("\n");
 }
 
