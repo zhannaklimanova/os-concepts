@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "sfs_api.h": "c",
+        "disk_emu.h": "c"
+    }
+}
