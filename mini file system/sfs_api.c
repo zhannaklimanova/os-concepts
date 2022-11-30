@@ -7,7 +7,7 @@ Block freeBlockListCache; // in-memory cache for the free bitmap/blocklist
 OpenFileDescriptorTable openFDTCache; // in-memory cache for the open file descriptor table
 struct { // in-memory cache for all the root directory entries/files
     DirectoryEntry directoryEntries[TOTAL_FILES];
-    int rootDirectoryEntryPointer;
+    int location; // pointer to the location of a file on device (mentioned in textbook pg 530)
 } rootDirectoryCache;
 
 
@@ -33,15 +33,15 @@ void mksfs(int fresh)
         // Initializing a fresh disk in the emulator
         init_fresh_disk(diskName, DISK_BLOCK_SIZE, DISK_DATA_BLOCKS);
 
-        // Initializing a free blocks list (free bit map) in the emulator
+        // Before allocating any blocks, need to initialize the free blocks list (free bit map) in the emulator
         freeBlockListCache.data[FreeBlockListIndex] = OccupiedBlock; // index of the free block list location so it will always be occupied
         for (int i = 0; i < DISK_BLOCK_SIZE-1; i++)
         {
-            freeBlockListCache.data[i] = FreeBlock; // free block = 1; allocated/occupied block = 0
+            freeBlockListCache.data[i] = FreeBlock;
         }
         write_blocks(FreeBlockListIndex, 1, &freeBlockListCache); // saving the free block list to the disk emulator
 
-        // Initializing the in-memory root directory and saving it to the disk (on-disk root directory)
+        // Initializing the root directory pointed to by the super block
         iNode rootDirectory; // note: a directory (root directory or any other) is still a type i-Node
         for (int i = 0; i < DIRECT_POINTERS; i++)
         {
@@ -53,9 +53,10 @@ void mksfs(int fresh)
         // Initializing the in-memory super block and saving it to the disk (on-disk super block)
         superBlockCache.magic = MAGIC;
         superBlockCache.blockSize = DISK_BLOCK_SIZE;
-        superBlockCache.fileSystemSize = DISK_DATA_BLOCKS;
-        superBlockCache.iNodeTableLength = INODE_TABLE_LENGTH; // ask on my courses
+        superBlockCache.fileSystemSize = DISK_DATA_BLOCKS; // since super block and root dir are part of the total disk data blocks we don't add them
+        superBlockCache.iNodeTableLength = 12;//DISK_DATA_BLOCKS;
         superBlockCache.rootDirectory = rootDirectory;
+        strcpy(superBlockCache.name, "Super Block");
         write_blocks(SuperBlockIndex, 1, &superBlockCache); // saving the super block on the disk emulator
 
         // Initializing the in-memory root directory and saving it to the disk (on-disk root directory)
@@ -68,13 +69,16 @@ void mksfs(int fresh)
         {
             allocateBlock();
         }
-        rootDirectoryCache.rootDirectoryEntryPointer = START_INDEX;
+        rootDirectoryCache.location = START_INDEX;
         write_blocks(RootDirectoryIndex, 1, &rootDirectoryCache);
 
         // Initializing the in-memory i-Node table and saving it to the disk (on-disk i-Node table)
         for (int i = 0; i < TOTAL_FILES; i++)
         {
+            iNodesTableCache.iNodes[i].mode = -1; // del
             iNodesTableCache.iNodes[i].linkCount = INITIALIZATION_VALUE;
+            iNodesTableCache.iNodes[i].uid = -1; // del
+            iNodesTableCache.iNodes[i].gid = -1; // del
             iNodesTableCache.iNodes[i].size = INITIALIZATION_VALUE;
 
             for (int j = 0; j < DIRECT_POINTERS; j++)
@@ -100,7 +104,6 @@ void mksfs(int fresh)
     // Initialize the open file descriptor table
     for (int i = 0; i < TOTAL_FILES; i++)
     {
-        openFDTCache.iNodeNumbers[i] = INITIALIZATION_VALUE;
         openFDTCache.readPointers[i] = INITIALIZATION_VALUE;
         openFDTCache.writePointers[i] = INITIALIZATION_VALUE;
     }

@@ -2,16 +2,20 @@
 #define SFS_API_H
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define DIRECT_POINTERS 12
-#define INODE_TABLE_LENGTH 12
-#define MAX_FILENAME_LENGTH 16
+#define INDIRECT_POINTERS DISK_BLOCK_SIZE/sizeof(int)
+// #define INODE_TABLE_LENGTH 12
+#define MAX_FILENAME_LENGTH 16 // characters
 #define MAGIC 0xACBD0005 // way to identify the format of the file that is holding the emulated disk partition
-#define DISK_BLOCK_SIZE 1024 // block size in the disk
-#define DISK_DATA_BLOCKS 200 // directory size
-#define TOTAL_FILES 200 // number of files/directories
+#define DISK_BLOCK_SIZE 1024 // byte block size in the disk (note: the larger the block size, the greater the internal fragmentation)
+#define DISK_DATA_BLOCKS 1024 // directory size 2000
+#define TOTAL_FILES 200 // numbeof files/directories
 #define INITIALIZATION_VALUE -1 // struct field initialization values
-#define TOTAL_ROOT_DIRECTORY_BLOCKS 1
+#define TOTAL_ROOT_DIRECTORY_BLOCKS 5 //1
 #define EMPTY_STRING '\0'
 #define START_INDEX 0
 
@@ -20,7 +24,7 @@ enum DiskDataStructureIndices {
     SuperBlockIndex = 0,
     iNodeTableIndex = 1,
     RootDirectoryIndex = 13,
-    FreeBlockListIndex = DISK_BLOCK_SIZE-1
+    FreeBlockListIndex = 0x000003FF//DISK_BLOCK_SIZE-1
 };
 
 /**
@@ -32,16 +36,12 @@ typedef struct Block_t { // block is composed of 1024 bytes
 } Block;
 
 /**
- * @brief the super block defines the file system geometry; it is the first block in the Simple File System (SFS).
+ * @brief the singly indirect block pointer points to a block of pointers, each of which points to a data block.
+ *
  */
-typedef struct SuperBlock_t { // super block is composed of 80 bytes
-    int magic; // 0xACBD0005
-    int blockSize; // 1024 bytes
-    int fileSystemSize; // number of blocks
-    int iNodeTableLength; // number of blocks
-    iNode rootDirectory; // i-Node pointing to the root directory is stored in the super block
-    // The rest is unused space
-} SuperBlock;
+typedef struct IndirectBlock_t {
+    int blockOfPointers[INDIRECT_POINTERS];
+} IndirectBlock;
 
 /**
  * @brief the file or directory in the Simple File System (SFS) is defined by an i-Node. In the case of this SFS,
@@ -50,12 +50,29 @@ typedef struct SuperBlock_t { // super block is composed of 80 bytes
  *        indirect pointers; instead, it has direct and indirect pointers.
  */
 typedef struct iNode_t { // i-Node is composed of 64 bytes
-    // int mode;
+    int mode;
     int linkCount; // i-Node availability: linkCount = 0 when i-Node is unused; linkCount = 1 when i-Node is used
+    int uid; // del latr
+    int gid; // del latr
     int size; // everytime something is written to file, size field is changed
+
+    // A pointer is 4 bytes
     int directPointers[DIRECT_POINTERS];
     int indirectPointer;
 } iNode;
+
+/**
+ * @brief the super block defines the file system geometry; it is the first block in the Simple File System (SFS).
+ */
+typedef struct SuperBlock_t { // super block is composed of 80 bytes
+    char name[sizeof("Super Block")]; // file system name
+    int magic; // indicates the type of data in the file
+    int blockSize; // 1024 bytes
+    int fileSystemSize; // number of blocks
+    int iNodeTableLength; // number of blocks
+    iNode rootDirectory; // i-Node pointing to the root directory is stored in the super block
+    // The rest is unused space
+} SuperBlock;
 
 /**
  * @brief i-Node table is included as part of the on-disk data structures and is also
@@ -68,12 +85,15 @@ typedef struct iNodesTable_t {
 
 /**
  * @brief the root directory has directory entries which are all files in the case of the
- *        Simple File System; each file has a filename and iNodeNumber associated with it.
+ *        Simple File System; each file has a filename and the file's unique identifier (id). The
+ *        identifier is a unique tag, usually a number, and identifies the file within the
+ *        file system; it is the non-human readable name for the file.
  *
  */
 typedef struct DirectoryEntry_t { // directory entry is composed of 20 bytes
     char filename[MAX_FILENAME_LENGTH];
-    int iNodeNumber; // i-Node associated with the file
+    // int id; // i-Node associated with the file
+    // iNode fileINode; // i-Node associated with the file
 } DirectoryEntry;
 
 /**
@@ -82,11 +102,19 @@ typedef struct DirectoryEntry_t { // directory entry is composed of 20 bytes
  *
  */
 typedef struct OpenFileDescriptorTable_t {
-    int iNodeNumbers[TOTAL_FILES]; // i-Node associated with the files
+    // int iNodeNumbers[TOTAL_FILES]; // i-Node associated with the files
     // Chosen pointer schema: Simple File System with two independant read/write pointers
     int readPointers[TOTAL_FILES];
     int writePointers[TOTAL_FILES];
 } OpenFileDescriptorTable;
+
+
+
+
+
+
+
+
 
 
 
