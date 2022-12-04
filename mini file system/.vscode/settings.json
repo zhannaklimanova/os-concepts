@@ -1,6 +1,8 @@
 {
     "files.associations": {
         "sfs_api.h": "c",
-        "disk_emu.h": "c"
+        "disk_emu.h": "c",
+        "stdio.h": "c",
+        "typeinfo": "c"
     }
 }
