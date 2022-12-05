@@ -9,50 +9,20 @@ struct { // in-memory cache for all the root directory entries/files
     int location; // pointer to the location of a file on device (mentioned in textbook pg 530)
 } rootDirectoryCache;
 
-/**
- * Read data block from disk emulator
- *
- * @param   start_address start address to read from (# of blocks)
- * @return  pointer to buffer with read data
- */
-void *read_block(int start_address) {
-    int blocksToRead = 1;
-    void *buffer = (void*) malloc(DISK_BLOCK_SIZE); // Allocate a empty block
-    read_blocks(start_address, blocksToRead, buffer);
-    return buffer;
-}
-
-/**
- * Save root directory the disk.
- */
-void flush_root_directory_to_disk() {
-    write_blocks(RootDirectoryIndex, 4, &rootDirectoryCache);
-}
-
-/**
- * Save inode table to the disk.
- */
-void flush_inode_table_to_disk() {
-    void *buffer = (void*) malloc(DISK_BLOCK_SIZE * DIRECT_POINTERS);
-    memcpy(buffer, &iNodesTableCache, DISK_BLOCK_SIZE * DIRECT_POINTERS);
-    write_blocks(iNodeTableIndex, DIRECT_POINTERS, buffer);
-    free(buffer);
-}
-
-/**
- * Find and allocate free data block in disk.
- *
- * @return  free block index
- */
-int allocate_new_block() {
-    for (int i = 0; i < DISK_BLOCK_SIZE; i++) {  // Loop over bytes
-        if (freeBlockListCache.data[i] != 0) {  // Free block found
-            freeBlockListCache.data[i] = 0;
-            write_blocks(FreeBlockListIndex, 1, &freeBlockListCache);
-            return i;   // Return block index
+int allocateBlock() {
+    int blocksToWrite = 1;
+    int freeBlockCacheIndex = 0;
+    while (freeBlockCacheIndex < DISK_BLOCK_SIZE)
+    {
+        if (freeBlockListCache.data[freeBlockCacheIndex] != 0) {
+            freeBlockListCache.data[freeBlockCacheIndex] = 0;
+            write_blocks(FreeBlockListIndex, blocksToWrite, &freeBlockListCache);
+            return freeBlockCacheIndex;
         }
+        ++freeBlockCacheIndex;
     }
-    return -1;  // ERROR: No free blocks left
+    printf("ERROR: there are no more free blocks left to allocate.");
+    return allocateBlockError;
 }
 
 void mksfs(int fresh) {
@@ -74,7 +44,7 @@ void mksfs(int fresh) {
         iNode rootDirectory; // note: a directory (root directory or any other) is still a type i-Node
         for (int i = 0; i < DIRECT_POINTERS; i++)
         {
-            rootDirectory.directPointers[i] = allocate_new_block();  // find a block to store the root directory
+            rootDirectory.directPointers[i] = allocateBlock();  // find a block to store the root directory
         }
         rootDirectory.size = INITIALIZATION_VALUE; // this field will change when the root directory is filled up
         rootDirectory.indirectPointer = INITIALIZATION_VALUE;
@@ -97,19 +67,17 @@ void mksfs(int fresh) {
 
         for (int rootDirectoryBlock = 0; rootDirectoryBlock < TOTAL_ROOT_DIRECTORY_BLOCKS; rootDirectoryBlock++)
         {
-            allocate_new_block();
+            allocateBlock();
         }
         rootDirectoryCache.location = START_INDEX;
-        write_blocks(RootDirectoryIndex, 4, &rootDirectoryCache);
+        write_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS-1, &rootDirectoryCache);
 
         /**************INITLIAZE INODE TABLE**************/
         // Initializing the in-memory i-Node table and saving it to the disk (on-disk i-Node table)
         for (int fileIndex = 0; fileIndex < TOTAL_FILES; fileIndex++)
         {
-            iNodesTableCache.iNodes[fileIndex].mode = -1; // del
+            strcpy(iNodesTableCache.name, "i-Node Table");
             iNodesTableCache.iNodes[fileIndex].linkCount = INITIALIZATION_VALUE;
-            iNodesTableCache.iNodes[fileIndex].uid = -1; // del
-            iNodesTableCache.iNodes[fileIndex].gid = -1; // del
             iNodesTableCache.iNodes[fileIndex].size = INITIALIZATION_VALUE;
 
             for (int directPointerIndex = 0; directPointerIndex < DIRECT_POINTERS; directPointerIndex++)
@@ -128,11 +96,12 @@ void mksfs(int fresh) {
         init_disk(diskName, DISK_BLOCK_SIZE, DISK_DATA_BLOCKS);
         read_blocks(SuperBlockIndex, 1, &superBlockCache);
         read_blocks(iNodeTableIndex, DIRECT_POINTERS, &iNodesTableCache);
-        read_blocks(RootDirectoryIndex, 4, &rootDirectoryCache);
+        read_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS-1, &rootDirectoryCache);
         read_blocks(FreeBlockListIndex, 1, &freeBlockListCache);
     }
     /**************INITLIAZE OPEN FILE DESCRIPTOR TABLE**************/
-    for (int fileIndex = 0; fileIndex < TOTAL_FILES; fileIndex++) {
+    for (int fileIndex = 0; fileIndex < TOTAL_FILES; fileIndex++)
+    {
         openFDTCache.read_writePointers[fileIndex] = FDT_INITIALIZER_VALUE;
     }
 }
@@ -147,7 +116,8 @@ int sfs_getnextfilename(char* fname) {
 
     /**************FUNCTION**************/
     int fileIndex = 0;
-    while (fileIndex < TOTAL_FILES) {
+    while (fileIndex < TOTAL_FILES)
+    {
         if (rootDirectoryCache.directoryEntries[fileIndex].filename[0] != EMPTY_STRING) {
             rootDirectoryCache.location = fileIndex + 1; // getting next filename
             write_blocks(RootDirectoryIndex, 4, &rootDirectoryCache);
@@ -157,7 +127,7 @@ int sfs_getnextfilename(char* fname) {
         ++fileIndex;
     }
     rootDirectoryCache.location = 0; // Reset search location to start
-    write_blocks(RootDirectoryIndex, 4, &rootDirectoryCache);
+    write_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS-1, &rootDirectoryCache);
 
     return NoError;
 }
@@ -173,7 +143,8 @@ int sfs_getfilesize(const char* path) {
     /**************FUNCTION**************/
     int fileIndex = 0;
     int iNodeSize;
-    while (fileIndex < TOTAL_FILES) {
+    while (fileIndex < TOTAL_FILES)
+    {
         if (strcmp(path, rootDirectoryCache.directoryEntries[fileIndex].filename) == 0) {
             iNodeSize = iNodesTableCache.iNodes[fileIndex].size;
             return iNodeSize;
@@ -195,7 +166,8 @@ int sfs_fopen(char *fname) {
     /**************FUNCTION**************/
     // Case 1: open existing file if the root directory contains it
     int fd = 0;
-    while (fd < TOTAL_FILES) {
+    while (fd < TOTAL_FILES)
+    {
         if (strcmp(rootDirectoryCache.directoryEntries[fd].filename, fname) == 0) {
             openFDTCache.read_writePointers[fd] = iNodesTableCache.iNodes[fd].size;
             return fd;
@@ -205,13 +177,18 @@ int sfs_fopen(char *fname) {
 
     // Case 2: create new file in a free root directory slot
     fd = 0;
-    while (fd < TOTAL_FILES) {
+    void *iNodeBuffer;
+    while (fd < TOTAL_FILES)
+    {
         if (rootDirectoryCache.directoryEntries[fd].filename[0] == EMPTY_STRING) {
             openFDTCache.read_writePointers[fd] = 0;
             iNodesTableCache.iNodes[fd].size = 0;
             strncpy(rootDirectoryCache.directoryEntries[fd].filename, fname, MAX_FILENAME_LENGTH);
-            flush_inode_table_to_disk();
-            write_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS, &rootDirectoryCache);
+            iNodeBuffer = (void*) malloc(DISK_BLOCK_SIZE * DIRECT_POINTERS);
+            memcpy(iNodeBuffer, &iNodesTableCache, DISK_BLOCK_SIZE * DIRECT_POINTERS);
+            write_blocks(iNodeTableIndex, DIRECT_POINTERS, iNodeBuffer);
+            free(iNodeBuffer);
+            write_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS-1, &rootDirectoryCache);
             return fd;
         }
         ++fd;
@@ -274,6 +251,8 @@ int sfs_fread(int fd, char *buf, int count) {
     char *blockBuffer;
     int blockNumber;
     int blockIndex = 0;
+    int startAddress;
+    int blocksToRead = 1;
 
     if (fileSize < rwPointer + count) { // note: rwPointer is pointing to end of file from fopen
         bytesToRead = fileSize - rwPointer;
@@ -282,20 +261,26 @@ int sfs_fread(int fd, char *buf, int count) {
     numBlocksForFile = (fileSize / DISK_BLOCK_SIZE) + ((fileSize % DISK_BLOCK_SIZE) != 0); // get number of blocks the file is using
     fileDataBuffer = (void*) malloc(numBlocksForFile * DISK_BLOCK_SIZE);
     blockBuffer = (void*) malloc(DISK_BLOCK_SIZE); // buffer to temporarily store each block
+    void *tempBuffer = (void*) malloc(DISK_BLOCK_SIZE);
+
     memset(fileDataBuffer, 0, numBlocksForFile * DISK_BLOCK_SIZE);
     memset(blockBuffer, 0, DISK_BLOCK_SIZE);
 
-    while (blockIndex < numBlocksForFile) {
+    while (blockIndex < numBlocksForFile)
+    {
         if (blockIndex < DIRECT_POINTERS) {
             blockNumber = iNodesTableCache.iNodes[fd].directPointers[blockIndex];
         } else {
             if (indirectBlock == NULL) {
-                indirectBlock = read_block(iNodesTableCache.iNodes[fd].indirectPointer);
+                startAddress = iNodesTableCache.iNodes[fd].indirectPointer;
+                read_blocks(startAddress, 1, tempBuffer);
+                indirectBlock = tempBuffer;
             }
             if (blockIndex - DIRECT_POINTERS >= INDIRECT_POINTERS) {
                 free(indirectBlock);
                 free(fileDataBuffer);
                 free(blockBuffer);
+                // free(tempBuffer);
 
                 printf("ERROR in sfs_fread: not enough blocks to complete block allocation request.\n");
                 return fReadError;
@@ -306,11 +291,12 @@ int sfs_fread(int fd, char *buf, int count) {
             free(indirectBlock);
             free(fileDataBuffer);
             free(blockBuffer);
+            // free(tempBuffer);
 
             printf("ERROR in sfs_fread: an invalid block number was requested.\n");
             return fReadError;
         }
-        read_blocks(blockNumber, 1, blockBuffer);
+        read_blocks(blockNumber, blocksToRead, blockBuffer);
         memcpy(fileDataBuffer + (blockIndex * DISK_BLOCK_SIZE), blockBuffer, DISK_BLOCK_SIZE); // Copy data into file buffer
         ++blockIndex;
     }
@@ -320,6 +306,7 @@ int sfs_fread(int fd, char *buf, int count) {
     free(indirectBlock);
     free(fileDataBuffer);
     free(blockBuffer);
+    // free(tempBuffer);
 
     return bytesToRead;
 }
@@ -346,6 +333,7 @@ int sfs_fwrite(int fd, const char *buf, int count) {
     int rwPointer = openFDTCache.read_writePointers[fd];
     int fileSize;
     int numBlocksForFile;
+    void *iNodeBuffer;
 
     // Update file size and number of blocks required for the file
     int newSize = rwPointer + count;
@@ -370,28 +358,34 @@ int sfs_fwrite(int fd, const char *buf, int count) {
     int blockIndexInFreeBlockList = 0;
     int indirectBlockAddressPointer = 0;
     int blockIndex = 0;
-    while (blockIndex < numBlocksForFile) {
+    int startAddress;
+    int blocksToRead = 1;
+    void *tempBuffer = (void*) malloc(DISK_BLOCK_SIZE);
+    while (blockIndex < numBlocksForFile)
+    {
         if (blockIndex < DIRECT_POINTERS) { // will later distribute file information bytes amongst direct i-Node pointers
             blockIndexInFreeBlockList = iNodeOfFile.directPointers[blockIndex];
             if (blockIndexInFreeBlockList < 0) { // unused block
-                blockIndexInFreeBlockList = allocate_new_block();
+                blockIndexInFreeBlockList = allocateBlock();
                 iNodesTableCache.iNodes[fd].directPointers[blockIndex] = blockIndexInFreeBlockList;
             }
         } else { // will later distribute file information bytes amongst indirect i-Node pointers b/c ran out of direct pointers
             if (iNodeOfFile.indirectPointer < 0) { // Uninitialized indirect block
-                indirectBlockAddressPointer = allocate_new_block();
+                indirectBlockAddressPointer = allocateBlock();
                 iNodeOfFile.indirectPointer = indirectBlockAddressPointer;  // Get new indirect block
                 iNodesTableCache.iNodes[fd].indirectPointer = indirectBlockAddressPointer;
                 IndirectBlock indirect;
                 for (int indirectPointerIndex = 0; indirectPointerIndex < INDIRECT_POINTERS; indirectPointerIndex++) {
                     indirect.blockOfPointers[indirectPointerIndex] = -1; // Reset indirect pointers
                 }
-                blockIndexInFreeBlockList = allocate_new_block();
+                blockIndexInFreeBlockList = allocateBlock();
                 indirect.blockOfPointers[0] = blockIndexInFreeBlockList;
                 write_blocks(indirectBlockAddressPointer, 1, &indirect);
             } else { // indirect block initialized
                 if (indirectBlock == NULL) {
-                    indirectBlock = read_block(iNodeOfFile.indirectPointer);
+                    startAddress = iNodeOfFile.indirectPointer;
+                    read_blocks(startAddress, blocksToRead, tempBuffer);
+                    indirectBlock = tempBuffer;
                 }
                 if (blockIndex - DIRECT_POINTERS >= INDIRECT_POINTERS) {
                     free(fileDataBuffer);
@@ -401,7 +395,7 @@ int sfs_fwrite(int fd, const char *buf, int count) {
                 }
                 blockIndexInFreeBlockList = indirectBlock->blockOfPointers[blockIndex - DIRECT_POINTERS];
                 if (blockIndexInFreeBlockList < 0) {  // uninitialized indirect block
-                    blockIndexInFreeBlockList = allocate_new_block();
+                    blockIndexInFreeBlockList = allocateBlock();
                     indirectBlock->blockOfPointers[blockIndex - DIRECT_POINTERS] = blockIndexInFreeBlockList;
                     write_blocks(iNodeOfFile.indirectPointer, 1, indirectBlock);
                 }
@@ -421,7 +415,10 @@ int sfs_fwrite(int fd, const char *buf, int count) {
 
     openFDTCache.read_writePointers[fd] = fileSize;
     iNodesTableCache.iNodes[fd].size = fileSize;
-    flush_inode_table_to_disk();
+    iNodeBuffer = (void*) malloc(DISK_BLOCK_SIZE * DIRECT_POINTERS);
+    memcpy(iNodeBuffer, &iNodesTableCache, DISK_BLOCK_SIZE * DIRECT_POINTERS);
+    write_blocks(iNodeTableIndex, DIRECT_POINTERS, iNodeBuffer);
+    free(iNodeBuffer);
 
     return count;
 }
@@ -438,15 +435,18 @@ int sfs_remove(char *fname) {
     int fileIndex = 0;
     int blockIndex = 0;
     IndirectBlock *indirectBlock;
-    while (fileIndex < TOTAL_FILES) {
+    void *tempBuffer;
+    int blocksToRead = 1;
+    int startAddress;
+    void *iNodeBuffer;
+    while (fileIndex < TOTAL_FILES)
+    {
         if (strcmp(rootDirectoryCache.directoryEntries[fileIndex].filename, fname) == 0) {
-            iNodesTableCache.iNodes[fileIndex].mode = -1;
             iNodesTableCache.iNodes[fileIndex].linkCount = -1;
-            iNodesTableCache.iNodes[fileIndex].uid = -1;
-            iNodesTableCache.iNodes[fileIndex].gid = -1;
             iNodesTableCache.iNodes[fileIndex].size = -1;
 
-            for (int directPointerIndex = 0; directPointerIndex < DIRECT_POINTERS; directPointerIndex++) {
+            for (int directPointerIndex = 0; directPointerIndex < DIRECT_POINTERS; directPointerIndex++)
+            {
                 blockIndex = iNodesTableCache.iNodes[fileIndex].directPointers[directPointerIndex];
                 if (blockIndex != -1) {
                     freeBlockListCache.data[blockIndex] = FreeBlock;
@@ -455,8 +455,12 @@ int sfs_remove(char *fname) {
             }
 
             if (iNodesTableCache.iNodes[fileIndex].indirectPointer != -1) {
-                indirectBlock = read_block(iNodesTableCache.iNodes[fileIndex].indirectPointer);
-                for (int indirectPointerIndex = 0; indirectPointerIndex < INDIRECT_POINTERS; indirectPointerIndex++) {
+                tempBuffer = (void*) malloc(DISK_BLOCK_SIZE);
+                startAddress = iNodesTableCache.iNodes[fileIndex].indirectPointer;
+                read_blocks(startAddress, blocksToRead, tempBuffer);
+                indirectBlock = tempBuffer;
+                for (int indirectPointerIndex = 0; indirectPointerIndex < INDIRECT_POINTERS; indirectPointerIndex++)
+                {
                     blockIndex = indirectBlock->blockOfPointers[indirectPointerIndex];
                     if (blockIndex != -1) {
                         freeBlockListCache.data[blockIndex] = FreeBlock;
@@ -468,9 +472,12 @@ int sfs_remove(char *fname) {
             openFDTCache.read_writePointers[fileIndex] = -1;
             rootDirectoryCache.directoryEntries[fileIndex].filename[0] = EMPTY_STRING;
 
-            write_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS, &rootDirectoryCache);
+            write_blocks(RootDirectoryIndex, TOTAL_ROOT_DIRECTORY_BLOCKS-1, &rootDirectoryCache);
             write_blocks(FreeBlockListIndex, 1, &freeBlockListCache);
-            flush_inode_table_to_disk();
+            iNodeBuffer = (void*) malloc(DISK_BLOCK_SIZE * DIRECT_POINTERS);
+            memcpy(iNodeBuffer, &iNodesTableCache, DISK_BLOCK_SIZE * DIRECT_POINTERS);
+            write_blocks(iNodeTableIndex, DIRECT_POINTERS, iNodeBuffer);
+            free(iNodeBuffer);
 
             return NoError;
         }

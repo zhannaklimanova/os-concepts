@@ -1,3 +1,13 @@
+/**
+ * @author Zhanna Klimanova (zhanna.klimanova@mail.mcgill.ca)
+ * @brief
+ * @version disko
+ * @date 2022-12-05
+ *
+ * @copyright Copyright (c) 2022
+ *
+ */
+
 #ifndef SFS_API_H
 #define SFS_API_H
 
@@ -11,16 +21,14 @@
 
 #define DIRECT_POINTERS 12
 #define INDIRECT_POINTERS DISK_BLOCK_SIZE/sizeof(int)
-// #define INODE_TABLE_LENGTH 12
-#define MAX_FILENAME_LENGTH 33 // characters
+#define MAX_FILENAME_LENGTH 35 // characters
 #define MAGIC 0xACBD0005 // way to identify the format of the file that is holding the emulated disk partition
 #define DISK_BLOCK_SIZE 1024 // byte block size in the disk (note: the larger the block size, the greater the internal fragmentation)
 #define DISK_DATA_BLOCKS 2000 // directory size 2000
-#define TOTAL_FILES 200 // number of files/directories
+#define TOTAL_FILES 300 // number of files/directories
 #define INITIALIZATION_VALUE -1 // struct field initialization values
 #define FDT_INITIALIZER_VALUE -1
-// #define ERROR -1
-#define TOTAL_ROOT_DIRECTORY_BLOCKS 5 //1
+#define TOTAL_ROOT_DIRECTORY_BLOCKS 6 // 1
 #define EMPTY_STRING '\0'
 #define START_INDEX 0
 
@@ -28,8 +36,8 @@ enum BlockUtilizationState {FreeBlock = 1, OccupiedBlock = 0};
 enum DiskDataStructureIndices {
     SuperBlockIndex = 0,
     iNodeTableIndex = 1,
-    RootDirectoryIndex = 13,
-    FreeBlockListIndex = 0x000003FF//DISK_BLOCK_SIZE-1 (1023)
+    RootDirectoryIndex = 301,
+    FreeBlockListIndex = 0x000003FF // DISK_BLOCK_SIZE-1
 };
 enum ReturnErrorCodes {
     fOpenError = -1,
@@ -40,6 +48,7 @@ enum ReturnErrorCodes {
     fRemoveError = -1,
     getnextfilenameError = -1,
     getfilesizeError = -1,
+    allocateBlockError = -1,
     NoError = 0
 };
 
@@ -65,13 +74,9 @@ typedef struct IndirectBlock_t {
  *        is pointed to by the super block. The i-Node structure is also simplified: it does not have the double and triple
  *        indirect pointers; instead, it has direct and indirect pointers.
  */
-typedef struct iNode_t { // i-Node is composed of 64 bytes
-    int mode;
+typedef struct iNode_t {
     int linkCount; // i-Node availability: linkCount = 0 when i-Node is unused; linkCount = 1 when i-Node is used
-    int uid; // del latr
-    int gid; // del latr
     int size; // everytime something is written to file, size field is changed
-
     // A pointer is 4 bytes
     int directPointers[DIRECT_POINTERS];
     int indirectPointer;
@@ -80,10 +85,10 @@ typedef struct iNode_t { // i-Node is composed of 64 bytes
 /**
  * @brief the super block defines the file system geometry; it is the first block in the Simple File System (SFS).
  */
-typedef struct SuperBlock_t { // super block is composed of 80 bytes
-    char name[sizeof("Super Block")]; // file system name
+typedef struct SuperBlock_t {
+    char name[sizeof("Super Block")];
     int magic; // indicates the type of data in the file
-    int blockSize; // 1024 bytes
+    int blockSize;
     int fileSystemSize; // number of blocks
     int iNodeTableLength; // number of blocks
     iNode rootDirectory; // i-Node pointing to the root directory is stored in the super block
@@ -96,6 +101,7 @@ typedef struct SuperBlock_t { // super block is composed of 80 bytes
  *
  */
 typedef struct iNodesTable_t {
+    char name[sizeof("i-Node Table")];
     iNode iNodes[TOTAL_FILES];
 } iNodesTable;
 
@@ -118,37 +124,17 @@ typedef struct DirectoryEntry_t { // directory entry is composed of 20 bytes
  *
  */
 typedef struct OpenFileDescriptorTable_t {
-    // int iNodeNumbers[TOTAL_FILES]; // i-Node associated with the files
-    // Chosen pointer schema: Simple File System with two independant read/write pointers
-    // int readPointers[TOTAL_FILES];
-    // int writePointers[TOTAL_FILES];
     int read_writePointers[TOTAL_FILES];
 } OpenFileDescriptorTable;
 
-
-
-
-
-
-
-
-
-// /**
-//  * @brief determine if the provided file descriptor is valid.
-//  *
-//  * @param fd
-//  * @return int
-//  */
-// int isFileDescriptoInvalid(int fd);
-
-// /**
-//  * @brief loops over the free block list (free bitmap) and locates any available
-//  *        blocks. An available block is marked with 1 while an occupied block is marked
-//  *        with 0.
-//  *
-//  * @return int
-//  */
-// int allocateBlock();
+/**
+ * @brief loops over the free block list (free bitmap) and locates any available
+ *        blocks. An available block is marked with 1 while an occupied block is marked
+ *        with 0.
+ *
+ * @return int
+ */
+int allocateBlock();
 
 /**
  * @brief formats the virtual disk implemented by the disk emulator

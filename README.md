@@ -10,3 +10,6 @@ make tests <br />
 make run <br />
 make clean <br />
 
+## mini file system
+*Uncomment either line 6 || 7 || 8 in the Makefile* <br />
+./test.sh <br />
